@@ -6,6 +6,8 @@ A citation-first retrieval-augmented generation project for an AI operations han
 
 The application works without a paid API in **offline retrieval mode**. If `OPENAI_API_KEY` is present, it can generate a concise grounded answer with the OpenAI Responses API. Retrieved source passages remain visible in both modes.
 
+Portfolio companion: [Tashkent Apartment Listing Price Predictor](https://github.com/DilnuraHamdamova/tashkent-apartment-price-predictor), an end-to-end tabular ML regression project.
+
 ## Architecture
 
 ```text
