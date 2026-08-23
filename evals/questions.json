@@ -1,0 +1,9 @@
+[
+  {"question": "What must happen before a model is deployed?", "expected_source": "deployment.md"},
+  {"question": "How is RAG retrieval quality measured?", "expected_source": "evaluation.md"},
+  {"question": "What should happen after a severe AI incident?", "expected_source": "incidents.md"},
+  {"question": "When is human review required?", "expected_source": "responsible_ai.md"},
+  {"question": "What signals should be monitored in production?", "expected_source": "deployment.md"},
+  {"question": "What data should not be placed in prompts?", "expected_source": "responsible_ai.md"}
+]
+
