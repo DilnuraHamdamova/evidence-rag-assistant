@@ -131,6 +131,19 @@ def documents_page() -> None:
             edit_content = st.text_area(
                 "Matn", value=existing_content, height=300, key="edit_content"
             )
+            current_category = next(
+                (
+                    name
+                    for name, category_id in category_options.items()
+                    if category_id == selected["category_id"]
+                ),
+                "Kategoriyasiz",
+            )
+            edit_category_name = st.selectbox(
+                "Kategoriya ",
+                list(category_options),
+                index=list(category_options).index(current_category),
+            )
             col1, col2 = st.columns(2)
             if col1.button("O‘zgarishlarni saqlash"):
                 try:
@@ -139,7 +152,7 @@ def documents_page() -> None:
                         edit_title,
                         selected["filename"],
                         edit_content,
-                        selected["category_id"],
+                        category_options[edit_category_name],
                     )
                     st.success("O‘zgarish saqlandi.")
                     st.rerun()
@@ -183,9 +196,25 @@ def categories_page() -> None:
                 flash_error(error)
     if categories:
         selected = st.selectbox(
-            "O‘chiriladigan kategoriya", categories, format_func=lambda item: item["name"]
+            "Kategoriyani boshqarish", categories, format_func=lambda item: item["name"]
         )
-        if st.button("Kategoriyani o‘chirish"):
+        edit_name = st.text_input("Kategoriya nomi ", value=selected["name"])
+        edit_description = st.text_area("Izoh ", value=selected["description"])
+        update_column, delete_column = st.columns(2)
+        if update_column.button("Kategoriyani yangilash"):
+            try:
+                admin.save_category(
+                    st.session_state.user,
+                    edit_name,
+                    edit_description,
+                    selected["id"],
+                )
+                st.success("Kategoriya yangilandi.")
+                st.rerun()
+            except AdminError as error:
+                flash_error(error)
+        confirm = st.checkbox("Kategoriya o‘chirilishini tasdiqlayman")
+        if delete_column.button("Kategoriyani o‘chirish", disabled=not confirm):
             try:
                 admin.delete_category(st.session_state.user, selected["id"])
                 st.rerun()
@@ -233,6 +262,12 @@ def users_page() -> None:
 def history_page() -> None:
     st.header("Query history")
     queries = admin.list_queries(500)
+    search = st.text_input("Savol bo‘yicha qidirish").strip().lower()
+    status = st.selectbox("Holat", ["Barchasi", "success", "error"])
+    if search:
+        queries = [item for item in queries if search in item["question"].lower()]
+    if status != "Barchasi":
+        queries = [item for item in queries if item["status"] == status]
     if queries:
         st.dataframe(queries, use_container_width=True, hide_index=True)
     else:
@@ -284,7 +319,12 @@ def settings_page() -> None:
 
 def audit_page() -> None:
     st.header("Audit log")
-    st.dataframe(admin.audit_logs(500), use_container_width=True, hide_index=True)
+    logs = admin.audit_logs(500)
+    actions = ["Barchasi", *sorted({item["action"] for item in logs})]
+    action = st.selectbox("Amal bo‘yicha filter", actions)
+    if action != "Barchasi":
+        logs = [item for item in logs if item["action"] == action]
+    st.dataframe(logs, use_container_width=True, hide_index=True)
 
 
 if "token" not in st.session_state or "user" not in st.session_state:
