@@ -82,3 +82,73 @@ def test_role_permissions_and_audit(admin_app):
 
     logs = service.audit_logs()
     assert any(row["action"] == "create" and row["entity_type"] == "user" for row in logs)
+
+
+def test_users_feedback_settings_and_audit_endpoints(admin_app):
+    client = TestClient(admin_app)
+    headers = login(client)
+
+    created_user = client.post(
+        "/admin/users",
+        headers=headers,
+        json={
+            "email": "editor@example.com",
+            "full_name": "Content Editor",
+            "password": "editor-password",
+            "role": "editor",
+        },
+    )
+    assert created_user.status_code == 200
+    assert created_user.json()["role"] == "editor"
+    assert len(client.get("/admin/users", headers=headers).json()) == 2
+
+    answer = client.post("/ask", json={"question": "What does the policy require?"}).json()
+    feedback = client.post(
+        "/feedback", json={"query_id": answer["query_id"], "rating": 1, "comment": "Useful"}
+    )
+    assert feedback.status_code == 200
+    assert client.get("/admin/feedback", headers=headers).json()[0]["rating"] == 1
+
+    updated_setting = client.put(
+        "/admin/settings/default_top_k", headers=headers, json={"value": "5"}
+    )
+    assert updated_setting.status_code == 200
+    assert updated_setting.json()["value"] == "5"
+
+    audit_logs = client.get("/admin/audit-logs", headers=headers)
+    assert audit_logs.status_code == 200
+    assert {item["entity_type"] for item in audit_logs.json()} >= {
+        "user",
+        "feedback",
+        "setting",
+    }
+
+
+def test_viewer_has_read_only_admin_access(admin_app):
+    service = admin_app.state.admin
+    owner = service.get_user(1)
+    service.create_user(owner, "viewer@example.com", "Viewer", "viewer-password", "viewer")
+    client = TestClient(admin_app)
+    login_response = client.post(
+        "/auth/login", json={"email": "viewer@example.com", "password": "viewer-password"}
+    )
+    viewer_headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+
+    assert client.get("/admin/dashboard", headers=viewer_headers).status_code == 200
+    assert client.get("/admin/documents", headers=viewer_headers).status_code == 200
+    assert (
+        client.post(
+            "/admin/categories",
+            headers=viewer_headers,
+            json={"name": "Forbidden", "description": ""},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            "/admin/settings/default_top_k",
+            headers=viewer_headers,
+            json={"value": "4"},
+        ).status_code
+        == 403
+    )
