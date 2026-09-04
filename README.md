@@ -74,6 +74,43 @@ Role permissions are cumulative: viewers have read-only access, editors manage k
 and feedback, admins manage settings and users, and superadmins can grant or modify the
 superadmin role.
 
+## Grafana monitoring
+
+Grafana is separate from the administration panel. The admin panel manages documents,
+users, settings, and full query records. The observability stack monitors aggregate system
+health without copying question or answer text into metrics or technical request logs.
+
+```text
+FastAPI /metrics ──> Prometheus ──> Grafana metric panels
+Docker logs ───────> Grafana Alloy ──> Loki ──> Grafana log panel
+SQLite ────────────> Admin panel (full query history and audit records)
+```
+
+Start the complete local stack:
+
+```bash
+cp .env.observability.example .env.observability
+# Replace every example password before starting.
+docker compose --env-file .env.observability \
+  -f docker-compose.observability.yml up --build -d
+```
+
+Services:
+
+- Hujjat AI API: `http://localhost:8010`
+- Admin panel: `http://localhost:8502`
+- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090`
+
+The provisioned **Hujjat AI Overview** dashboard contains question volume and mode, error
+count, P95 RAG latency, HTTP traffic, feedback ratio, document/admin counts, API memory,
+and privacy-safe application logs. Prometheus retains 30 days and Loki retains 30 days in
+the local Compose setup.
+
+For production, pin container image versions, put Grafana behind TLS/SSO, protect or isolate
+the `/metrics` endpoint, restrict Docker socket access, use managed persistent storage, and
+define retention according to the organization's privacy policy.
+
 OpenAI mode is optional:
 
 ```bash

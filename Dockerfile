@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir .
 COPY knowledge ./knowledge
 COPY api.py admin_app.py ./
 
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+RUN useradd --create-home appuser && mkdir -p /app/data && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
