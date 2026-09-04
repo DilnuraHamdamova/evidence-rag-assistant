@@ -35,6 +35,18 @@ streamlit run app.py
 The public application records query outcomes and optional thumbs-up/down feedback for the
 admin dashboard.
 
+## Portfolio builder
+
+The Streamlit app includes a **Portfolio yaratish** section. Users can enter their profile,
+skills, links, and projects, preview a responsive self-contained `index.html`, and download a
+ZIP archive. The same archive can be deployed directly to Vercel or Netlify by supplying a
+personal access token at deploy time. Tokens are used only for the request and are not stored in
+the Hujjat AI database.
+
+Vercel deployments use the REST API's inline-file deployment endpoint; Netlify deployments create
+a site and upload the generated ZIP. Both integrations return the live URL when the provider
+accepts the deployment.
+
 ## Admin panel
 
 Create the first superadmin without storing the password in source control:
