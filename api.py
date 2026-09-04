@@ -14,6 +14,7 @@ from evidence_rag.admin_api import create_admin_router
 from evidence_rag.admin_service import AdminService
 from evidence_rag.admin_store import AdminStore
 from evidence_rag.generation import generate_with_openai
+from evidence_rag.observability import RAG_DURATION, RAG_QUERIES, install_observability
 
 ROOT = Path(__file__).parent
 
@@ -65,6 +66,7 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
     application.state.assistant = assistant
     application.state.admin = admin
     application.include_router(create_admin_router(admin, assistant.reindex))
+    install_observability(application, admin)
 
     @application.get("/health")
     def health() -> dict[str, str]:
@@ -78,22 +80,28 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
         try:
             answer = assistant.ask(request.question, top_k, request.use_openai)
         except ValueError as error:
+            duration = perf_counter() - started
             admin.record_query(
                 request.question,
                 None,
                 None,
                 [],
-                round((perf_counter() - started) * 1000),
+                round(duration * 1000),
                 error=str(error),
             )
+            RAG_QUERIES.labels("unknown", "error").inc()
+            RAG_DURATION.observe(duration)
             raise HTTPException(status_code=400, detail=str(error)) from error
+        duration = perf_counter() - started
         query_id = admin.record_query(
             request.question,
             answer.text,
             answer.mode,
             answer.citations,
-            round((perf_counter() - started) * 1000),
+            round(duration * 1000),
         )
+        RAG_QUERIES.labels(answer.mode, "success").inc()
+        RAG_DURATION.observe(duration)
         return AnswerResponse(
             query_id=query_id,
             answer=answer.text,

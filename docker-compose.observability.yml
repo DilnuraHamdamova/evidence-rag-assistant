@@ -1,0 +1,101 @@
+services:
+  app:
+    build: .
+    container_name: hujjat-api
+    environment:
+      HUJJAT_DATABASE_PATH: /app/data/admin.db
+      HUJJAT_ADMIN_EMAIL: ${HUJJAT_ADMIN_EMAIL:-}
+      HUJJAT_ADMIN_PASSWORD: ${HUJJAT_ADMIN_PASSWORD:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "8010:8000"
+    volumes:
+      - hujjat-data:/app/data
+      - ./knowledge:/app/knowledge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  admin:
+    build: .
+    container_name: hujjat-admin
+    command: ["streamlit", "run", "admin_app.py", "--server.address=0.0.0.0", "--server.port=8502", "--browser.gatherUsageStats=false"]
+    environment:
+      HUJJAT_DATABASE_PATH: /app/data/admin.db
+      HUJJAT_ADMIN_EMAIL: ${HUJJAT_ADMIN_EMAIL:-}
+      HUJJAT_ADMIN_PASSWORD: ${HUJJAT_ADMIN_PASSWORD:-}
+    ports:
+      - "8502:8502"
+    volumes:
+      - hujjat-data:/app/data
+      - ./knowledge:/app/knowledge
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: hujjat-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: hujjat-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: hujjat-alloy
+    command: ["run", "/etc/alloy/config.alloy", "--server.http.listen-addr=0.0.0.0:12345"]
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: hujjat-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  hujjat-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

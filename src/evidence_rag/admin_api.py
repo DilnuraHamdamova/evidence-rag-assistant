@@ -8,6 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from .admin_service import AdminError, AdminService, PermissionDenied
+from .observability import FEEDBACK, REINDEXES
 
 
 class LoginRequest(BaseModel):
@@ -133,8 +134,10 @@ def create_admin_router(service: AdminService, reindex: Callable[[], int]) -> AP
             service.require_role(user, "editor")
             chunk_count = reindex()
             service.mark_documents_indexed(user)
+            REINDEXES.labels("success").inc()
             return {"chunks": chunk_count}
         except AdminError as error:
+            REINDEXES.labels("error").inc()
             raise handle(error) from error
 
     @router.get("/admin/categories")
@@ -213,7 +216,9 @@ def create_admin_router(service: AdminService, reindex: Callable[[], int]) -> AP
     @router.post("/feedback")
     def public_feedback(request: FeedbackCreate) -> dict[str, Any]:
         try:
-            return service.add_feedback(None, request.query_id, request.rating, request.comment)
+            result = service.add_feedback(None, request.query_id, request.rating, request.comment)
+            FEEDBACK.labels("positive" if request.rating == 1 else "negative").inc()
+            return result
         except AdminError as error:
             raise handle(error) from error
 
@@ -222,7 +227,9 @@ def create_admin_router(service: AdminService, reindex: Callable[[], int]) -> AP
         request: FeedbackCreate, user: Annotated[dict[str, Any], Depends(current_user)]
     ) -> dict[str, Any]:
         try:
-            return service.add_feedback(user, request.query_id, request.rating, request.comment)
+            result = service.add_feedback(user, request.query_id, request.rating, request.comment)
+            FEEDBACK.labels("positive" if request.rating == 1 else "negative").inc()
+            return result
         except AdminError as error:
             raise handle(error) from error
 

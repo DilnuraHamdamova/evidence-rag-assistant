@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -12,6 +14,33 @@ from evidence_rag.admin_service import ROLE_LEVEL, AdminError, AdminService
 from evidence_rag.admin_store import AdminStore
 
 ROOT = Path(__file__).parent
+LOCAL_TIMEZONE = ZoneInfo("Asia/Samarkand")
+ROLE_LABELS = {
+    "superadmin": "Bosh administrator",
+    "admin": "Administrator",
+    "editor": "Muharrir",
+    "viewer": "Kuzatuvchi",
+}
+STATUS_LABELS = {"success": "Muvaffaqiyatli", "error": "Xato"}
+DOCUMENT_STATUS_LABELS = {"indexed": "Indekslangan", "pending": "Indeks kutilmoqda"}
+MODE_LABELS = {"offline-retrieval": "Mahalliy qidiruv", "openai": "OpenAI"}
+ACTION_LABELS = {
+    "create": "Yaratildi",
+    "update": "Yangilandi",
+    "delete": "O‘chirildi",
+    "login": "Tizimga kirdi",
+    "logout": "Tizimdan chiqdi",
+    "reindex": "Qayta indekslandi",
+}
+ENTITY_LABELS = {
+    "user": "Foydalanuvchi",
+    "session": "Sessiya",
+    "document": "Hujjat",
+    "category": "Kategoriya",
+    "feedback": "Feedback",
+    "setting": "Sozlama",
+    "knowledge_base": "Bilim bazasi",
+}
 
 
 @st.cache_resource
@@ -37,6 +66,31 @@ def flash_error(error: Exception) -> None:
 
 def role_at_least(role: str) -> bool:
     return ROLE_LEVEL[st.session_state.user["role"]] >= ROLE_LEVEL[role]
+
+
+def friendly_time(value: str | None) -> str:
+    if not value:
+        return "—"
+    parsed = datetime.fromisoformat(value)
+    return parsed.astimezone(LOCAL_TIMEZONE).strftime("%d.%m.%Y %H:%M")
+
+
+def friendly_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    return f"{size_bytes / 1024:.1f} KB"
+
+
+def details_text(details: dict) -> str:
+    labels = {"role": "Rol", "is_active": "Faol", "filename": "Fayl", "value": "Qiymat"}
+    values = []
+    for key, value in details.items():
+        if key == "role":
+            value = ROLE_LABELS.get(str(value), value)
+        if isinstance(value, bool):
+            value = "Ha" if value else "Yo‘q"
+        values.append(f"{labels.get(key, key)}: {value}")
+    return "; ".join(values) or "—"
 
 
 def login_screen() -> None:
@@ -76,17 +130,38 @@ def dashboard_page() -> None:
     )
     st.subheader("Oxirgi savollar")
     if data["recent_queries"]:
-        st.dataframe(data["recent_queries"], use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Savol": item["question"],
+                "Javob turi": MODE_LABELS.get(item["mode"], item["mode"] or "—"),
+                "Holat": STATUS_LABELS.get(item["status"], item["status"]),
+                "Tezlik": f"{item['latency_ms']} ms" if item["latency_ms"] is not None else "—",
+                "Vaqt": friendly_time(item["created_at"]),
+            }
+            for item in data["recent_queries"]
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
     else:
         st.info("Hali savollar yozilmagan.")
 
 
 def documents_page() -> None:
-    st.header("Documents")
+    st.header("Hujjatlar")
     documents = admin.list_documents()
     categories = admin.list_categories()
     if documents:
-        st.dataframe(documents, use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Nomi": item["title"],
+                "Fayl": item["filename"],
+                "Kategoriya": item["category_name"] or "Kategoriyasiz",
+                "Holat": DOCUMENT_STATUS_LABELS.get(item["status"], item["status"]),
+                "Hajmi": friendly_size(item["size_bytes"]),
+                "Yangilangan": friendly_time(item["updated_at"]),
+            }
+            for item in documents
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
     if not role_at_least("editor"):
         st.info("Viewer hujjatlarni faqat ko‘ra oladi.")
         return
@@ -179,10 +254,19 @@ def documents_page() -> None:
 
 
 def categories_page() -> None:
-    st.header("Categories")
+    st.header("Kategoriyalar")
     categories = admin.list_categories()
     if categories:
-        st.dataframe(categories, use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Nomi": item["name"],
+                "Tavsif": item["description"] or "—",
+                "Hujjatlar soni": item["document_count"],
+                "Yangilangan": friendly_time(item["updated_at"]),
+            }
+            for item in categories
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
     if not role_at_least("editor"):
         return
     with st.form("category_create"):
@@ -223,9 +307,20 @@ def categories_page() -> None:
 
 
 def users_page() -> None:
-    st.header("Users & roles")
+    st.header("Foydalanuvchilar va rollar")
     users = admin.list_users(st.session_state.user)
-    st.dataframe(users, use_container_width=True, hide_index=True)
+    rows = [
+        {
+            "Ism": item["full_name"],
+            "Email": item["email"],
+            "Rol": ROLE_LABELS.get(item["role"], item["role"]),
+            "Faol": "Ha" if item["is_active"] else "Yo‘q",
+            "Oxirgi kirish": friendly_time(item["last_login_at"]),
+            "Yaratilgan": friendly_time(item["created_at"]),
+        }
+        for item in users
+    ]
+    st.dataframe(rows, width="stretch", hide_index=True)
     with st.form("user_create"):
         st.subheader("Yangi foydalanuvchi")
         email = st.text_input("Email")
@@ -260,16 +355,49 @@ def users_page() -> None:
 
 
 def history_page() -> None:
-    st.header("Query history")
+    st.header("Savollar tarixi")
     queries = admin.list_queries(500)
     search = st.text_input("Savol bo‘yicha qidirish").strip().lower()
-    status = st.selectbox("Holat", ["Barchasi", "success", "error"])
+    status_options = {"Barchasi": None, "Muvaffaqiyatli": "success", "Xato": "error"}
+    status_label = st.selectbox("Holat", list(status_options))
     if search:
         queries = [item for item in queries if search in item["question"].lower()]
-    if status != "Barchasi":
-        queries = [item for item in queries if item["status"] == status]
+    if status_options[status_label]:
+        queries = [item for item in queries if item["status"] == status_options[status_label]]
     if queries:
-        st.dataframe(queries, use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Vaqt": friendly_time(item["created_at"]),
+                "Savol": item["question"],
+                "Javob turi": MODE_LABELS.get(item["mode"], item["mode"] or "—"),
+                "Holat": STATUS_LABELS.get(item["status"], item["status"]),
+                "Tezlik": f"{item['latency_ms']} ms" if item["latency_ms"] is not None else "—",
+            }
+            for item in queries
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
+        selected = st.selectbox(
+            "Savol va javobni batafsil ko‘rish",
+            queries,
+            format_func=lambda item: (
+                f"{friendly_time(item['created_at'])} — {item['question'][:90]}"
+            ),
+        )
+        st.markdown("#### Savol")
+        st.write(selected["question"])
+        st.markdown("#### Javob")
+        if selected["answer"]:
+            st.write(selected["answer"])
+        elif selected["error"]:
+            st.error(selected["error"])
+        else:
+            st.info("Javob mavjud emas.")
+        st.markdown("#### Manbalar")
+        if selected["citations"]:
+            for citation in selected["citations"]:
+                st.markdown(f"- {citation}")
+        else:
+            st.caption("Manba qayd etilmagan.")
     else:
         st.info("Hali query mavjud emas.")
 
@@ -278,7 +406,16 @@ def feedback_page() -> None:
     st.header("Feedback")
     feedback = admin.list_feedback()
     if feedback:
-        st.dataframe(feedback, use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Vaqt": friendly_time(item["created_at"]),
+                "Baho": "Foydali 👍" if item["rating"] == 1 else "Foydasiz 👎",
+                "Savol": item["question"],
+                "Izoh": item["comment"] or "—",
+            }
+            for item in feedback
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
     queries = admin.list_queries(100)
     if role_at_least("editor") and queries:
         with st.form("feedback_create"):
@@ -303,11 +440,18 @@ def feedback_page() -> None:
 
 
 def settings_page() -> None:
-    st.header("Settings")
+    st.header("Sozlamalar")
+    labels = {
+        "openai_model": ("OpenAI modeli", "Masalan: gpt-5.4-mini"),
+        "default_top_k": ("Dalillar soni", "Har bir savol uchun olinadigan manbalar soni"),
+        "system_prompt": ("Tizim ko‘rsatmasi", "AI javob berishda bajaradigan asosiy qoida"),
+    }
     for setting in admin.get_settings():
         with st.form(f"setting_{setting['key']}"):
-            st.caption(setting["description"])
-            value = st.text_area(setting["key"], value=setting["value"])
+            label, help_text = labels.get(setting["key"], (setting["key"], setting["description"]))
+            st.subheader(label)
+            st.caption(help_text)
+            value = st.text_area("Qiymat", value=setting["value"], label_visibility="collapsed")
             if st.form_submit_button("Saqlash", disabled=not role_at_least("admin")):
                 try:
                     admin.update_setting(st.session_state.user, setting["key"], value)
@@ -318,13 +462,31 @@ def settings_page() -> None:
 
 
 def audit_page() -> None:
-    st.header("Audit log")
+    st.header("O‘zgarishlar tarixi")
+    st.caption("Administratorlar tizimda bajargan muhim amallar")
     logs = admin.audit_logs(500)
-    actions = ["Barchasi", *sorted({item["action"] for item in logs})]
-    action = st.selectbox("Amal bo‘yicha filter", actions)
-    if action != "Barchasi":
-        logs = [item for item in logs if item["action"] == action]
-    st.dataframe(logs, use_container_width=True, hide_index=True)
+    action_values = sorted({item["action"] for item in logs})
+    action_options = {
+        "Barchasi": None,
+        **{ACTION_LABELS.get(item, item): item for item in action_values},
+    }
+    action_label = st.selectbox("Amal bo‘yicha filter", list(action_options))
+    if action_options[action_label]:
+        logs = [item for item in logs if item["action"] == action_options[action_label]]
+    rows = [
+        {
+            "Vaqt": friendly_time(item["created_at"]),
+            "Kim": item["actor_email"] or "Tizim",
+            "Amal": ACTION_LABELS.get(item["action"], item["action"]),
+            "Nima o‘zgardi": ENTITY_LABELS.get(item["entity_type"], item["entity_type"]),
+            "Tafsilot": details_text(item["details"]),
+        }
+        for item in logs
+    ]
+    if rows:
+        st.dataframe(rows, width="stretch", hide_index=True)
+    else:
+        st.info("Tanlangan filter bo‘yicha amallar topilmadi.")
 
 
 if "token" not in st.session_state or "user" not in st.session_state:
@@ -341,10 +503,10 @@ user = st.session_state.user
 with st.sidebar:
     st.title("Hujjat AI")
     st.write(user["full_name"])
-    st.caption(f"{user['email']} · {user['role']}")
-    pages = ["Dashboard", "Documents", "Categories", "Query history", "Feedback", "Settings"]
+    st.caption(f"{user['email']} · {ROLE_LABELS.get(user['role'], user['role'])}")
+    pages = ["Dashboard", "Hujjatlar", "Kategoriyalar", "Savollar tarixi", "Feedback", "Sozlamalar"]
     if role_at_least("admin"):
-        pages.extend(["Users & roles", "Audit log"])
+        pages.extend(["Foydalanuvchilar", "O‘zgarishlar tarixi"])
     selected_page = st.radio("Bo‘lim", pages)
     if st.button("Chiqish", use_container_width=True):
         admin.logout(st.session_state.token, user)
@@ -353,12 +515,12 @@ with st.sidebar:
 
 PAGE_HANDLERS = {
     "Dashboard": dashboard_page,
-    "Documents": documents_page,
-    "Categories": categories_page,
-    "Users & roles": users_page,
-    "Query history": history_page,
+    "Hujjatlar": documents_page,
+    "Kategoriyalar": categories_page,
+    "Foydalanuvchilar": users_page,
+    "Savollar tarixi": history_page,
     "Feedback": feedback_page,
-    "Settings": settings_page,
-    "Audit log": audit_page,
+    "Sozlamalar": settings_page,
+    "O‘zgarishlar tarixi": audit_page,
 }
 PAGE_HANDLERS[selected_page]()
