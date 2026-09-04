@@ -1,8 +1,8 @@
-# Evidence RAG Assistant
+# Hujjat AI — Evidence RAG Assistant
 
 [![CI](https://github.com/DilnuraHamdamova/evidence-rag-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/DilnuraHamdamova/evidence-rag-assistant/actions/workflows/ci.yml)
 
-A citation-first retrieval-augmented generation project for an AI operations handbook. It demonstrates document ingestion, chunking, TF-IDF retrieval, versioned evaluation, grounded LLM generation, a Streamlit interface, a FastAPI service, tests, CI, and Docker delivery.
+A citation-first retrieval-augmented generation project with a role-protected administration panel. It demonstrates document ingestion, chunking, TF-IDF retrieval, versioned evaluation, grounded LLM generation, Streamlit interfaces, a FastAPI service, tests, CI, and Docker delivery.
 
 The application works without a paid API in **offline retrieval mode**. If `OPENAI_API_KEY` is present, it can generate a concise grounded answer with the OpenAI Responses API. Retrieved source passages remain visible in both modes.
 
@@ -31,6 +31,36 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 streamlit run app.py
 ```
+
+The public application records query outcomes and optional thumbs-up/down feedback for the
+admin dashboard.
+
+## Admin panel
+
+Create the first superadmin without storing the password in source control:
+
+```bash
+export HUJJAT_ADMIN_PASSWORD="choose-a-strong-password"
+python -m evidence_rag.admin_cli --email admin@example.com
+unset HUJJAT_ADMIN_PASSWORD
+streamlit run admin_app.py --server.port 8502
+```
+
+Alternatively, set both `HUJJAT_ADMIN_EMAIL` and `HUJJAT_ADMIN_PASSWORD` when the API or
+admin application starts. They only bootstrap an empty user database; they do not replace
+an existing account. Admin data defaults to `data/admin.db` and can be moved with
+`HUJJAT_DATABASE_PATH`.
+
+The panel includes:
+
+- Dashboard metrics for documents, queries, users, errors, and feedback.
+- Markdown/text document upload, editing, deletion, categories, and live re-indexing.
+- `superadmin`, `admin`, `editor`, and `viewer` role enforcement.
+- Query history, feedback review, model/retrieval/prompt settings, and audit logs.
+
+Role permissions are cumulative: viewers have read-only access, editors manage knowledge
+and feedback, admins manage settings and users, and superadmins can grant or modify the
+superadmin role.
 
 OpenAI mode is optional:
 
@@ -86,7 +116,9 @@ knowledge/          original sample AI operations handbook
 evals/              versioned retrieval questions
 tests/              unit and API tests without real external calls
 app.py              Streamlit interface
+admin_app.py        authenticated Streamlit administration panel
 api.py              FastAPI service
+data/               local SQLite admin data (ignored by Git)
 Dockerfile          production-style API container
 ```
 
