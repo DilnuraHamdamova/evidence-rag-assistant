@@ -118,6 +118,51 @@ curl -X POST http://127.0.0.1:8000/ask \
   -d '{"question":"What must happen before deployment?","top_k":3}'
 ```
 
+### Telegram bot tracking
+
+To associate a question with a Telegram user, the bot backend sends the user identity with the
+question. The API remains backward compatible with clients that omit these fields.
+
+```bash
+curl -X POST http://127.0.0.1:8000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "question": "Shartnoma uchun qaysi hujjatlar kerak?",
+    "source": "telegram",
+    "telegram_user": {
+      "telegram_id": 123456789,
+      "username": "example_user",
+      "first_name": "Example",
+      "last_name": "User"
+    }
+  }'
+```
+
+When the bot sends a document to the user, it records the download separately:
+
+```bash
+curl -X POST http://127.0.0.1:8000/events/document-download \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "telegram_user": {"telegram_id": 123456789, "username": "example_user"},
+    "document_name": "deployment.md",
+    "telegram_file_id": "optional-telegram-file-id"
+  }'
+```
+
+The `/ask` response contains `query_id`. The bot should keep it in the inline feedback button's
+callback data and report a useful (`1`) or not useful (`-1`) answer:
+
+```bash
+curl -X POST http://127.0.0.1:8000/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"query_id":42,"rating":-1,"comment":"Foydalanuvchi noto‘g‘ri deb belgiladi"}'
+```
+
+The admin panel shows Telegram usernames, activity, questions, negative feedback, and downloaded
+documents. Grafana receives aggregate counts and technical failures only; it does not expose
+usernames or question text.
+
 ```bash
 docker build -t evidence-rag-assistant .
 docker run --rm -p 8000:8000 evidence-rag-assistant

@@ -349,11 +349,15 @@ class AdminService:
         latency_ms: int,
         *,
         error: str | None = None,
+        source: str = "api",
+        telegram_user: dict[str, Any] | None = None,
     ) -> int:
+        telegram_user_id = self.upsert_telegram_user(telegram_user) if telegram_user else None
         return self.store.execute(
             """INSERT INTO query_history
-               (question, answer, mode, citations_json, latency_ms, status, error, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (question, answer, mode, citations_json, latency_ms, status, error,
+                source, telegram_user_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 question,
                 answer,
@@ -362,15 +366,136 @@ class AdminService:
                 latency_ms,
                 "error" if error else "success",
                 error,
+                source,
+                telegram_user_id,
                 utc_now(),
             ),
         )
 
     def list_queries(self, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.store.all("SELECT * FROM query_history ORDER BY id DESC LIMIT ?", (limit,))
+        rows = self.store.all(
+            """SELECT q.*, t.telegram_id, t.username AS telegram_username,
+                      t.first_name AS telegram_first_name,
+                      t.last_name AS telegram_last_name
+               FROM query_history q
+               LEFT JOIN telegram_users t ON t.id = q.telegram_user_id
+               ORDER BY q.id DESC LIMIT ?""",
+            (limit,),
+        )
         for row in rows:
             row["citations"] = json.loads(row.pop("citations_json"))
         return rows
+
+    def upsert_telegram_user(self, identity: dict[str, Any]) -> int:
+        telegram_id = str(identity.get("telegram_id", "")).strip()
+        if not telegram_id:
+            raise AdminError("Telegram user ID is required")
+        username = str(identity.get("username") or "").strip().lstrip("@") or None
+        first_name = str(identity.get("first_name") or "").strip()
+        last_name = str(identity.get("last_name") or "").strip()
+        now = utc_now()
+        self.store.execute(
+            """INSERT INTO telegram_users
+               (telegram_id, username, first_name, last_name, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(telegram_id) DO UPDATE SET
+                   username = COALESCE(excluded.username, telegram_users.username),
+                   first_name = CASE WHEN excluded.first_name <> ''
+                                     THEN excluded.first_name ELSE telegram_users.first_name END,
+                   last_name = CASE WHEN excluded.last_name <> ''
+                                    THEN excluded.last_name ELSE telegram_users.last_name END,
+                   last_seen_at = excluded.last_seen_at""",
+            (telegram_id, username, first_name, last_name, now, now),
+        )
+        user = self.store.one(
+            "SELECT id FROM telegram_users WHERE telegram_id = ?", (telegram_id,)
+        )
+        assert user
+        return int(user["id"])
+
+    def record_document_download(
+        self,
+        telegram_user: dict[str, Any],
+        document_name: str,
+        telegram_file_id: str | None = None,
+    ) -> dict[str, Any]:
+        clean_name = Path(document_name).name.strip()
+        if not clean_name:
+            raise AdminError("Document name is required")
+        telegram_user_id = self.upsert_telegram_user(telegram_user)
+        document = self.store.one(
+            "SELECT id FROM documents WHERE filename = ? OR title = ? LIMIT 1",
+            (clean_name, document_name.strip()),
+        )
+        download_id = self.store.execute(
+            """INSERT INTO document_downloads
+               (telegram_user_id, document_id, document_name, telegram_file_id, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                telegram_user_id,
+                document["id"] if document else None,
+                clean_name,
+                telegram_file_id.strip() if telegram_file_id else None,
+                utc_now(),
+            ),
+        )
+        download = self.store.one(
+            "SELECT * FROM document_downloads WHERE id = ?", (download_id,)
+        )
+        assert download
+        return download
+
+    def list_telegram_users(self) -> list[dict[str, Any]]:
+        return self.store.all(
+            """SELECT t.*,
+                      (SELECT COUNT(*) FROM query_history q
+                       WHERE q.telegram_user_id = t.id) AS query_count,
+                      (SELECT COUNT(*) FROM query_history q
+                       WHERE q.telegram_user_id = t.id AND q.status = 'error') AS error_count,
+                      (SELECT COUNT(*) FROM feedback f
+                       JOIN query_history q ON q.id = f.query_id
+                       WHERE q.telegram_user_id = t.id AND f.rating = -1) AS negative_feedback,
+                      (SELECT COUNT(*) FROM document_downloads d
+                       WHERE d.telegram_user_id = t.id) AS download_count,
+                      (SELECT COUNT(DISTINCT d.document_name) FROM document_downloads d
+                       WHERE d.telegram_user_id = t.id) AS unique_documents
+               FROM telegram_users t ORDER BY t.last_seen_at DESC"""
+        )
+
+    def telegram_user_details(self, telegram_user_id: int) -> dict[str, Any]:
+        user = self.store.one("SELECT * FROM telegram_users WHERE id = ?", (telegram_user_id,))
+        if not user:
+            raise AdminError("Telegram user not found")
+        queries = self.store.all(
+            """SELECT q.id, q.question, q.answer, q.mode, q.status, q.error,
+                      q.latency_ms, q.created_at,
+                      (SELECT f.rating FROM feedback f WHERE f.query_id = q.id
+                       ORDER BY f.id DESC LIMIT 1) AS feedback_rating,
+                      (SELECT f.comment FROM feedback f WHERE f.query_id = q.id
+                       ORDER BY f.id DESC LIMIT 1) AS feedback_comment
+               FROM query_history q WHERE q.telegram_user_id = ? ORDER BY q.id DESC""",
+            (telegram_user_id,),
+        )
+        downloads = self.store.all(
+            """SELECT d.*, COALESCE(doc.title, d.document_name) AS document_title
+               FROM document_downloads d
+               LEFT JOIN documents doc ON doc.id = d.document_id
+               WHERE d.telegram_user_id = ? ORDER BY d.id DESC""",
+            (telegram_user_id,),
+        )
+        return {"user": user, "queries": queries, "downloads": downloads}
+
+    def list_document_downloads(self, limit: int = 500) -> list[dict[str, Any]]:
+        return self.store.all(
+            """SELECT d.*, t.telegram_id, t.username AS telegram_username,
+                      t.first_name, t.last_name,
+                      COALESCE(doc.title, d.document_name) AS document_title
+               FROM document_downloads d
+               JOIN telegram_users t ON t.id = d.telegram_user_id
+               LEFT JOIN documents doc ON doc.id = d.document_id
+               ORDER BY d.id DESC LIMIT ?""",
+            (limit,),
+        )
 
     def add_feedback(
         self, actor: dict[str, Any] | None, query_id: int, rating: int, comment: str = ""
@@ -398,7 +523,10 @@ class AdminService:
 
     def list_feedback(self) -> list[dict[str, Any]]:
         return self.store.all(
-            """SELECT f.*, q.question FROM feedback f JOIN query_history q ON q.id = f.query_id
+            """SELECT f.*, q.question, q.source,
+                      t.telegram_id, t.username AS telegram_username
+               FROM feedback f JOIN query_history q ON q.id = f.query_id
+               LEFT JOIN telegram_users t ON t.id = q.telegram_user_id
                ORDER BY f.id DESC"""
         )
 
@@ -427,6 +555,8 @@ class AdminService:
                 (SELECT COUNT(*) FROM documents) AS documents,
                 (SELECT COUNT(*) FROM categories) AS categories,
                 (SELECT COUNT(*) FROM users WHERE is_active = 1) AS users,
+                (SELECT COUNT(*) FROM telegram_users) AS telegram_users,
+                (SELECT COUNT(*) FROM document_downloads) AS document_downloads,
                 (SELECT COUNT(*) FROM query_history) AS queries,
                 (SELECT COUNT(*) FROM query_history WHERE status = 'error') AS errors,
                 (SELECT COUNT(*) FROM feedback WHERE rating = 1) AS positive_feedback,
@@ -434,7 +564,11 @@ class AdminService:
         )
         assert counts
         recent = self.store.all(
-            "SELECT id, question, mode, status, latency_ms, created_at FROM query_history ORDER BY id DESC LIMIT 10"
+            """SELECT q.id, q.question, q.mode, q.status, q.source, q.latency_ms,
+                      q.created_at, t.username AS telegram_username, t.telegram_id
+               FROM query_history q
+               LEFT JOIN telegram_users t ON t.id = q.telegram_user_id
+               ORDER BY q.id DESC LIMIT 10"""
         )
         return {"counts": counts, "recent_queries": recent}
 

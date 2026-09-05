@@ -202,6 +202,29 @@ def create_admin_router(service: AdminService, reindex: Callable[[], int]) -> AP
         except AdminError as error:
             raise handle(error) from error
 
+    @router.get("/admin/telegram-users")
+    def telegram_users(
+        user: Annotated[dict[str, Any], Depends(current_user)],
+    ) -> list[dict[str, Any]]:
+        return service.list_telegram_users()
+
+    @router.get("/admin/telegram-users/{telegram_user_id}")
+    def telegram_user_details(
+        telegram_user_id: int,
+        user: Annotated[dict[str, Any], Depends(current_user)],
+    ) -> dict[str, Any]:
+        try:
+            return service.telegram_user_details(telegram_user_id)
+        except AdminError as error:
+            raise handle(error) from error
+
+    @router.get("/admin/document-downloads")
+    def document_downloads(
+        user: Annotated[dict[str, Any], Depends(current_user)],
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> list[dict[str, Any]]:
+        return service.list_document_downloads(limit)
+
     @router.get("/admin/queries")
     def queries(
         user: Annotated[dict[str, Any], Depends(current_user)],

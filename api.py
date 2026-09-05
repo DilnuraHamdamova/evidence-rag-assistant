@@ -5,24 +5,52 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from time import perf_counter
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from evidence_rag import EvidenceAssistant
 from evidence_rag.admin_api import create_admin_router
 from evidence_rag.admin_service import AdminService
 from evidence_rag.admin_store import AdminStore
 from evidence_rag.generation import generate_with_openai
-from evidence_rag.observability import RAG_DURATION, RAG_QUERIES, install_observability
+from evidence_rag.observability import (
+    DOCUMENT_DOWNLOAD_EVENTS,
+    QUERIES_BY_SOURCE,
+    RAG_DURATION,
+    RAG_QUERIES,
+    install_observability,
+)
 
 ROOT = Path(__file__).parent
+
+
+class TelegramUserRequest(BaseModel):
+    telegram_id: int = Field(gt=0)
+    username: str | None = Field(default=None, max_length=64)
+    first_name: str = Field(default="", max_length=100)
+    last_name: str = Field(default="", max_length=100)
 
 
 class QuestionRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
     top_k: int | None = Field(default=None, ge=1, le=20)
     use_openai: bool = False
+    source: Literal["api", "web", "telegram"] = "api"
+    telegram_user: TelegramUserRequest | None = None
+
+    @model_validator(mode="after")
+    def require_telegram_identity(self) -> QuestionRequest:
+        if self.source == "telegram" and self.telegram_user is None:
+            raise ValueError("telegram_user is required when source is telegram")
+        return self
+
+
+class DocumentDownloadRequest(BaseModel):
+    telegram_user: TelegramUserRequest
+    document_name: str = Field(min_length=1, max_length=200)
+    telegram_file_id: str | None = Field(default=None, max_length=300)
 
 
 class Citation(BaseModel):
@@ -75,6 +103,8 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
     @application.post("/ask", response_model=AnswerResponse)
     def ask(request: QuestionRequest) -> AnswerResponse:
         started = perf_counter()
+        telegram_user = request.telegram_user.model_dump() if request.telegram_user else None
+        source = "telegram" if telegram_user else request.source
         settings = {item["key"]: item["value"] for item in admin.get_settings()}
         top_k = request.top_k or int(settings["default_top_k"])
         try:
@@ -88,10 +118,29 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
                 [],
                 round(duration * 1000),
                 error=str(error),
+                source=source,
+                telegram_user=telegram_user,
             )
             RAG_QUERIES.labels("unknown", "error").inc()
+            QUERIES_BY_SOURCE.labels(source, "error").inc()
             RAG_DURATION.observe(duration)
             raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            duration = perf_counter() - started
+            admin.record_query(
+                request.question,
+                None,
+                None,
+                [],
+                round(duration * 1000),
+                error=f"{type(error).__name__}: {error}",
+                source=source,
+                telegram_user=telegram_user,
+            )
+            RAG_QUERIES.labels("unknown", "error").inc()
+            QUERIES_BY_SOURCE.labels(source, "error").inc()
+            RAG_DURATION.observe(duration)
+            raise HTTPException(status_code=500, detail="Answer generation failed") from error
         duration = perf_counter() - started
         query_id = admin.record_query(
             request.question,
@@ -99,8 +148,11 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
             answer.mode,
             answer.citations,
             round(duration * 1000),
+            source=source,
+            telegram_user=telegram_user,
         )
         RAG_QUERIES.labels(answer.mode, "success").inc()
+        QUERIES_BY_SOURCE.labels(source, "success").inc()
         RAG_DURATION.observe(duration)
         return AnswerResponse(
             query_id=query_id,
@@ -115,6 +167,16 @@ def create_app(*, database_path: Path | None = None, knowledge_dir: Path | None 
                 for item in answer.results
             ],
         )
+
+    @application.post("/events/document-download", status_code=201)
+    def document_download(request: DocumentDownloadRequest) -> dict[str, int]:
+        result = admin.record_document_download(
+            request.telegram_user.model_dump(),
+            request.document_name,
+            request.telegram_file_id,
+        )
+        DOCUMENT_DOWNLOAD_EVENTS.inc()
+        return {"download_id": int(result["id"])}
 
     return application
 
