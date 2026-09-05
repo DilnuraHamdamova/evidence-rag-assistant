@@ -14,6 +14,13 @@ common:
       chunks_directory: /loki/chunks
       rules_directory: /loki/rules
 
+ingester:
+  wal:
+    # This local stack shares its filesystem with other development workloads.
+    # Keep a small safety margin while allowing Loki to ingest above the
+    # production-oriented default threshold of 90% disk utilization.
+    disk_full_threshold: 0.99
+
 schema_config:
   configs:
     - from: 2024-01-01
