@@ -24,6 +24,7 @@ ROLE_LABELS = {
 STATUS_LABELS = {"success": "Muvaffaqiyatli", "error": "Xato"}
 DOCUMENT_STATUS_LABELS = {"indexed": "Indekslangan", "pending": "Indeks kutilmoqda"}
 MODE_LABELS = {"offline-retrieval": "Mahalliy qidiruv", "openai": "OpenAI"}
+SOURCE_LABELS = {"telegram": "Telegram bot", "web": "Web ilova", "api": "API"}
 ACTION_LABELS = {
     "create": "Yaratildi",
     "update": "Yangilandi",
@@ -93,6 +94,21 @@ def details_text(details: dict) -> str:
     return "; ".join(values) or "—"
 
 
+def telegram_name(item: dict) -> str:
+    if item.get("telegram_username") or item.get("username"):
+        return f"@{item.get('telegram_username') or item.get('username')}"
+    full_name = " ".join(
+        filter(
+            None,
+            [
+                item.get("telegram_first_name") or item.get("first_name"),
+                item.get("telegram_last_name") or item.get("last_name"),
+            ],
+        )
+    )
+    return full_name or str(item.get("telegram_id") or "—")
+
+
 def login_screen() -> None:
     st.title("🛡️ Hujjat AI Admin")
     st.caption("Boshqaruv paneliga kirish")
@@ -119,12 +135,13 @@ def dashboard_page() -> None:
     st.header("Dashboard")
     data = admin.dashboard()
     counts = data["counts"]
-    columns = st.columns(5)
+    columns = st.columns(6)
     columns[0].metric("Hujjatlar", counts["documents"])
-    columns[1].metric("Savollar", counts["queries"])
-    columns[2].metric("Foydalanuvchilar", counts["users"])
-    columns[3].metric("Xatolar", counts["errors"])
-    columns[4].metric(
+    columns[1].metric("Telegram foydalanuvchilar", counts["telegram_users"])
+    columns[2].metric("Savollar", counts["queries"])
+    columns[3].metric("Yuklab olishlar", counts["document_downloads"])
+    columns[4].metric("Xatolar", counts["errors"])
+    columns[5].metric(
         "Feedback",
         f"{counts['positive_feedback']} 👍 / {counts['negative_feedback']} 👎",
     )
@@ -132,6 +149,9 @@ def dashboard_page() -> None:
     if data["recent_queries"]:
         rows = [
             {
+                "Foydalanuvchi": telegram_name(item)
+                if item["source"] == "telegram"
+                else SOURCE_LABELS.get(item["source"], item["source"]),
                 "Savol": item["question"],
                 "Javob turi": MODE_LABELS.get(item["mode"], item["mode"] or "—"),
                 "Holat": STATUS_LABELS.get(item["status"], item["status"]),
@@ -307,7 +327,7 @@ def categories_page() -> None:
 
 
 def users_page() -> None:
-    st.header("Foydalanuvchilar va rollar")
+    st.header("Adminlar va rollar")
     users = admin.list_users(st.session_state.user)
     rows = [
         {
@@ -354,20 +374,118 @@ def users_page() -> None:
             flash_error(error)
 
 
+def telegram_users_page() -> None:
+    st.header("Bot foydalanuvchilari")
+    st.caption("Telegram botdan foydalangan odamlar, savollari va yuklab olgan hujjatlari")
+    users = admin.list_telegram_users()
+    total_queries = sum(item["query_count"] for item in users)
+    total_downloads = sum(item["download_count"] for item in users)
+    total_negative = sum(item["negative_feedback"] for item in users)
+    columns = st.columns(4)
+    columns[0].metric("Foydalanuvchilar", len(users))
+    columns[1].metric("Bot savollari", total_queries)
+    columns[2].metric("Yuklab olishlar", total_downloads)
+    columns[3].metric("Foydasiz javoblar", total_negative)
+    if not users:
+        st.info("Bot hali Telegram foydalanuvchi ma’lumotini API’ga yubormagan.")
+        return
+
+    search = st.text_input("Username, ism yoki Telegram ID bo‘yicha qidirish").strip().lower()
+    if search:
+        users = [
+            item
+            for item in users
+            if search
+            in " ".join(
+                [
+                    item.get("username") or "",
+                    item.get("first_name") or "",
+                    item.get("last_name") or "",
+                    item["telegram_id"],
+                ]
+            ).lower()
+        ]
+    rows = [
+        {
+            "Telegram": telegram_name(item),
+            "Telegram ID": item["telegram_id"],
+            "Ism": " ".join(filter(None, [item["first_name"], item["last_name"]])) or "—",
+            "Savollar": item["query_count"],
+            "Xatolar": item["error_count"],
+            "Foydasiz 👎": item["negative_feedback"],
+            "Yuklab olishlar": item["download_count"],
+            "Hujjatlar": item["unique_documents"],
+            "Oxirgi faollik": friendly_time(item["last_seen_at"]),
+        }
+        for item in users
+    ]
+    st.dataframe(rows, width="stretch", hide_index=True)
+    if not users:
+        return
+    selected = st.selectbox(
+        "Foydalanuvchini batafsil ko‘rish",
+        users,
+        format_func=lambda item: f"{telegram_name(item)} · ID {item['telegram_id']}",
+    )
+    details = admin.telegram_user_details(selected["id"])
+    questions_tab, downloads_tab = st.tabs(["Savollari", "Yuklab olgan hujjatlari"])
+    with questions_tab:
+        query_rows = [
+            {
+                "Vaqt": friendly_time(item["created_at"]),
+                "Savol": item["question"],
+                "Holat": STATUS_LABELS.get(item["status"], item["status"]),
+                "Javob turi": MODE_LABELS.get(item["mode"], item["mode"] or "—"),
+                "Foydalanuvchi bahosi": (
+                    "Foydali 👍"
+                    if item["feedback_rating"] == 1
+                    else "Foydasiz 👎"
+                    if item["feedback_rating"] == -1
+                    else "Baholanmagan"
+                ),
+            }
+            for item in details["queries"]
+        ]
+        if query_rows:
+            st.dataframe(query_rows, width="stretch", hide_index=True)
+        else:
+            st.info("Bu foydalanuvchining savoli yo‘q.")
+    with downloads_tab:
+        download_rows = [
+            {
+                "Vaqt": friendly_time(item["created_at"]),
+                "Hujjat": item["document_title"],
+                "Fayl": item["document_name"],
+            }
+            for item in details["downloads"]
+        ]
+        if download_rows:
+            st.dataframe(download_rows, width="stretch", hide_index=True)
+        else:
+            st.info("Bu foydalanuvchi hali hujjat yuklab olmagan.")
+
+
 def history_page() -> None:
     st.header("Savollar tarixi")
     queries = admin.list_queries(500)
     search = st.text_input("Savol bo‘yicha qidirish").strip().lower()
     status_options = {"Barchasi": None, "Muvaffaqiyatli": "success", "Xato": "error"}
     status_label = st.selectbox("Holat", list(status_options))
+    source_options = {"Telegram bot": "telegram", "Barchasi": None, "Web ilova": "web", "API": "api"}
+    source_label = st.selectbox("Manba", list(source_options))
     if search:
         queries = [item for item in queries if search in item["question"].lower()]
     if status_options[status_label]:
         queries = [item for item in queries if item["status"] == status_options[status_label]]
+    if source_options[source_label]:
+        queries = [item for item in queries if item["source"] == source_options[source_label]]
     if queries:
         rows = [
             {
                 "Vaqt": friendly_time(item["created_at"]),
+                "Foydalanuvchi": telegram_name(item)
+                if item["source"] == "telegram"
+                else SOURCE_LABELS.get(item["source"], item["source"]),
                 "Savol": item["question"],
                 "Javob turi": MODE_LABELS.get(item["mode"], item["mode"] or "—"),
                 "Holat": STATUS_LABELS.get(item["status"], item["status"]),
@@ -399,7 +517,7 @@ def history_page() -> None:
         else:
             st.caption("Manba qayd etilmagan.")
     else:
-        st.info("Hali query mavjud emas.")
+        st.info("Tanlangan manba bo‘yicha savollar mavjud emas.")
 
 
 def feedback_page() -> None:
@@ -410,6 +528,9 @@ def feedback_page() -> None:
             {
                 "Vaqt": friendly_time(item["created_at"]),
                 "Baho": "Foydali 👍" if item["rating"] == 1 else "Foydasiz 👎",
+                "Foydalanuvchi": telegram_name(item)
+                if item["source"] == "telegram"
+                else SOURCE_LABELS.get(item["source"], item["source"]),
                 "Savol": item["question"],
                 "Izoh": item["comment"] or "—",
             }
@@ -504,9 +625,17 @@ with st.sidebar:
     st.title("Hujjat AI")
     st.write(user["full_name"])
     st.caption(f"{user['email']} · {ROLE_LABELS.get(user['role'], user['role'])}")
-    pages = ["Dashboard", "Hujjatlar", "Kategoriyalar", "Savollar tarixi", "Feedback", "Sozlamalar"]
+    pages = [
+        "Dashboard",
+        "Hujjatlar",
+        "Kategoriyalar",
+        "Bot foydalanuvchilari",
+        "Savollar tarixi",
+        "Feedback",
+        "Sozlamalar",
+    ]
     if role_at_least("admin"):
-        pages.extend(["Foydalanuvchilar", "O‘zgarishlar tarixi"])
+        pages.extend(["Adminlar va rollar", "O‘zgarishlar tarixi"])
     selected_page = st.radio("Bo‘lim", pages)
     if st.button("Chiqish", use_container_width=True):
         admin.logout(st.session_state.token, user)
@@ -517,7 +646,8 @@ PAGE_HANDLERS = {
     "Dashboard": dashboard_page,
     "Hujjatlar": documents_page,
     "Kategoriyalar": categories_page,
-    "Foydalanuvchilar": users_page,
+    "Adminlar va rollar": users_page,
+    "Bot foydalanuvchilari": telegram_users_page,
     "Savollar tarixi": history_page,
     "Feedback": feedback_page,
     "Sozlamalar": settings_page,

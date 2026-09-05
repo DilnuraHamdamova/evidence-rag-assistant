@@ -43,8 +43,19 @@ REINDEXES = Counter(
     "Knowledge base re-index operations",
     ("status",),
 )
+QUERIES_BY_SOURCE = Counter(
+    "hujjat_queries_by_source_total",
+    "Questions by client source and outcome",
+    ("source", "status"),
+)
+DOCUMENT_DOWNLOAD_EVENTS = Counter(
+    "hujjat_document_download_events_total",
+    "Document downloads reported by bot clients",
+)
 DOCUMENTS = Gauge("hujjat_documents", "Documents currently registered")
 ADMIN_USERS = Gauge("hujjat_admin_users", "Active admin users")
+TELEGRAM_USERS = Gauge("hujjat_telegram_users", "Telegram users seen by Hujjat AI")
+STORED_DOWNLOADS = Gauge("hujjat_stored_document_downloads", "Stored document downloads")
 STORED_QUERIES = Gauge("hujjat_stored_queries", "Questions stored in query history")
 STORED_ERRORS = Gauge("hujjat_stored_errors", "Failed questions stored in query history")
 POSITIVE_FEEDBACK = Gauge("hujjat_positive_feedback", "Positive feedback records")
@@ -57,6 +68,8 @@ def refresh_business_metrics(admin: AdminService) -> None:
     counts = admin.dashboard()["counts"]
     DOCUMENTS.set(counts["documents"])
     ADMIN_USERS.set(counts["users"])
+    TELEGRAM_USERS.set(counts["telegram_users"])
+    STORED_DOWNLOADS.set(counts["document_downloads"])
     STORED_QUERIES.set(counts["queries"])
     STORED_ERRORS.set(counts["errors"])
     POSITIVE_FEEDBACK.set(counts["positive_feedback"])

@@ -63,6 +63,7 @@ if st.button("Dalil topish", type="primary"):
             answer.mode,
             answer.citations,
             round((perf_counter() - started) * 1000),
+            source="web",
         )
         st.session_state.last_query_id = query_id
         st.subheader("Javob")
@@ -80,6 +81,7 @@ if st.button("Dalil topish", type="primary"):
             [],
             round((perf_counter() - started) * 1000),
             error=str(error),
+            source="web",
         )
         st.error(str(error))
 

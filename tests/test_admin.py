@@ -152,3 +152,86 @@ def test_viewer_has_read_only_admin_access(admin_app):
         ).status_code
         == 403
     )
+
+
+def test_telegram_user_questions_feedback_and_downloads_are_tracked(admin_app):
+    client = TestClient(admin_app)
+    headers = login(client)
+    telegram_user = {
+        "telegram_id": 123456789,
+        "username": "dilnura_test",
+        "first_name": "Dilnura",
+        "last_name": "Hamdamova",
+    }
+
+    answer = client.post(
+        "/ask",
+        json={
+            "question": "What audit trail is needed?",
+            "source": "telegram",
+            "telegram_user": telegram_user,
+        },
+    )
+    assert answer.status_code == 200
+    query_id = answer.json()["query_id"]
+
+    feedback = client.post(
+        "/feedback",
+        json={"query_id": query_id, "rating": -1, "comment": "Wrong answer"},
+    )
+    assert feedback.status_code == 200
+    download = client.post(
+        "/events/document-download",
+        json={"telegram_user": telegram_user, "document_name": "base.md"},
+    )
+    assert download.status_code == 201
+
+    users = client.get("/admin/telegram-users", headers=headers).json()
+    assert len(users) == 1
+    assert users[0]["username"] == "dilnura_test"
+    assert users[0]["query_count"] == 1
+    assert users[0]["negative_feedback"] == 1
+    assert users[0]["download_count"] == 1
+
+    details = client.get(f"/admin/telegram-users/{users[0]['id']}", headers=headers).json()
+    assert details["queries"][0]["feedback_rating"] == -1
+    assert details["downloads"][0]["document_name"] == "base.md"
+
+    query = client.get("/admin/queries", headers=headers).json()[0]
+    assert query["source"] == "telegram"
+    assert query["telegram_username"] == "dilnura_test"
+
+    dashboard = client.get("/admin/dashboard", headers=headers).json()
+    assert dashboard["counts"]["telegram_users"] == 1
+    assert dashboard["counts"]["document_downloads"] == 1
+
+
+def test_unexpected_bot_failure_is_visible_in_user_history(admin_app, monkeypatch):
+    client = TestClient(admin_app)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(admin_app.state.assistant, "ask", fail)
+    response = client.post(
+        "/ask",
+        json={
+            "question": "This request should fail",
+            "source": "telegram",
+            "telegram_user": {"telegram_id": 987654321, "username": "failed_user"},
+        },
+    )
+    assert response.status_code == 500
+    history = admin_app.state.admin.list_queries()
+    assert history[0]["status"] == "error"
+    assert history[0]["telegram_username"] == "failed_user"
+    assert "provider timeout" in history[0]["error"]
+
+
+def test_telegram_source_requires_user_identity(admin_app):
+    client = TestClient(admin_app)
+    response = client.post(
+        "/ask",
+        json={"question": "Who asked this?", "source": "telegram"},
+    )
+    assert response.status_code == 422
